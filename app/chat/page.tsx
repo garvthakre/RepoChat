@@ -332,6 +332,198 @@ function ShareButton({ owner, repo, messages }: { owner: string; repo: string; m
   );
 }
 
+// ---- Onboarding guide modal --------------------------------------------------
+const ONBOARDING_PROMPT = (repoName: string, files: string[], language: string) =>
+  `You are an expert software engineer onboarding a new developer onto the repository "${repoName}".
+
+Based on the repository context you have been given, produce a thorough onboarding checklist in clean Markdown.
+
+Use EXACTLY this structure (keep the headings verbatim):
+
+## 🚀 Getting Started
+Numbered steps to clone, install dependencies, configure environment variables, and run the project locally. Be specific — include actual commands where possible.
+
+## 📂 Key Files to Read First
+A prioritised list of the most important files to understand the codebase. For each file include one sentence explaining why it matters. Pull from the actual file tree: ${files.slice(0, 40).join(', ')}.
+
+## 🏗️ Architecture Overview
+2–4 short paragraphs explaining how the major pieces fit together (frontend, backend, database, external services, etc.).
+
+## ⚠️ Gotchas & Watch-Outs
+A bullet list of non-obvious things that trip up new developers: environment quirks, deployment assumptions, known rough edges, unusual patterns in the codebase.
+
+## 🧪 Running Tests
+How to run the test suite, what testing framework is used, and any coverage gaps to be aware of.
+
+## 📚 Useful Resources
+Links or references mentioned in the README or config files that a new dev should bookmark.
+
+Keep the tone practical and direct. Avoid padding. Format everything as clean Markdown that looks great when pasted into Notion, Confluence, or a GitHub wiki.`;
+
+function OnboardingModal({
+  repoData,
+  onClose,
+}: {
+  repoData: RepoData;
+  onClose: () => void;
+}) {
+  const [guide, setGuide]       = useState('');
+  const [loading, setLoading]   = useState(false);
+  const [generated, setGenerated] = useState(false);
+  const [copied, setCopied]     = useState(false);
+  const contentRef = useRef<HTMLDivElement>(null);
+
+  const generate = useCallback(async () => {
+    setLoading(true);
+    setGuide('');
+    try {
+      const prompt = ONBOARDING_PROMPT(
+        repoData.metadata.name,
+        repoData.files,
+        repoData.metadata.language ?? 'unknown'
+      );
+      const res = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          owner: repoData.owner,
+          repo: repoData.repo,
+          messages: [{ role: 'user', content: prompt }],
+        }),
+      });
+
+      if (!res.ok || !res.body) {
+        const err = await res.json().catch(() => ({ error: 'Unknown error' }));
+        setGuide(`❌ Error: ${err.error ?? 'Failed to generate guide'}`);
+        setLoading(false);
+        return;
+      }
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let full = '';
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        full += decoder.decode(value, { stream: true });
+        setGuide(full);
+      }
+      setGenerated(true);
+    } catch {
+      setGuide('❌ Network error. Please try again.');
+    } finally {
+      setLoading(false);
+    }
+  }, [repoData]);
+
+  // Auto-generate on open
+  useEffect(() => { void generate(); }, []);
+
+  const copyMarkdown = useCallback(async () => {
+    try { await navigator.clipboard.writeText(guide); }
+    catch {
+      const el = Object.assign(document.createElement('textarea'), { value: guide });
+      document.body.appendChild(el); el.select(); document.execCommand('copy'); el.remove();
+    }
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  }, [guide]);
+
+  // Close on Escape
+  useEffect(() => {
+    const fn = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', fn);
+    return () => window.removeEventListener('keydown', fn);
+  }, [onClose]);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div className="relative w-full max-w-2xl max-h-[85vh] flex flex-col rounded-2xl border border-slate-700 bg-slate-900 shadow-2xl shadow-black/50">
+        {/* Modal header */}
+        <div className="flex-shrink-0 flex items-center justify-between px-5 py-4 border-b border-slate-800">
+          <div className="flex items-center gap-2.5">
+            <div className="w-7 h-7 rounded-lg bg-emerald-600/20 border border-emerald-500/30 flex items-center justify-center text-sm">📋</div>
+            <div>
+              <h2 className="text-sm font-semibold text-white">Onboarding Guide</h2>
+              <p className="text-xs text-slate-500 font-mono">{repoData.metadata.name}</p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            {generated && (
+              <>
+                <button
+                  onClick={copyMarkdown}
+                  className={`flex items-center gap-1.5 text-xs border rounded-lg px-3 py-1.5 transition-all ${
+                    copied
+                      ? 'text-emerald-300 border-emerald-700/60 bg-emerald-900/20'
+                      : 'text-slate-300 hover:text-white border-slate-700 hover:border-slate-500 hover:bg-slate-800'
+                  }`}
+                >
+                  {copied ? (
+                    <><svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg>Copied!</>
+                  ) : (
+                    <><svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" /></svg>Copy Markdown</>
+                  )}
+                </button>
+                <button
+                  onClick={() => { setGenerated(false); void generate(); }}
+                  disabled={loading}
+                  className="flex items-center gap-1.5 text-xs text-slate-400 hover:text-white border border-slate-700 rounded-lg px-3 py-1.5 transition-colors disabled:opacity-40"
+                  title="Regenerate"
+                >
+                  <svg className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                  </svg>
+                  Redo
+                </button>
+              </>
+            )}
+            <button onClick={onClose} className="text-slate-500 hover:text-white transition-colors ml-1">
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
+        </div>
+
+        {/* Modal body */}
+        <div ref={contentRef} className="flex-1 overflow-y-auto px-5 py-4 scrollbar-thin">
+          {!guide && loading && (
+            <div className="flex flex-col items-center justify-center py-16 gap-4">
+              <div className="flex items-center gap-2">
+                <svg className="w-5 h-5 text-violet-400 animate-spin" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                </svg>
+                <span className="text-sm text-slate-400">Generating onboarding guide…</span>
+              </div>
+              <p className="text-xs text-slate-600 text-center max-w-xs">Analysing the codebase structure, README, and key files to build a practical checklist.</p>
+            </div>
+          )}
+
+          {guide && (
+            <div className="prose-custom text-sm leading-relaxed">
+              <div dangerouslySetInnerHTML={{ __html: renderMarkdown(guide) }} />
+              {loading && (
+                <span className="inline-block w-1.5 h-4 bg-violet-400 animate-pulse ml-0.5 align-text-bottom" />
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* Modal footer hint */}
+        {generated && (
+          <div className="flex-shrink-0 border-t border-slate-800 px-5 py-2.5">
+            <p className="text-xs text-slate-600 text-center">
+              Paste this into Notion, Confluence, or a GitHub wiki — it's standard Markdown.
+            </p>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ---- Rate limit banner -------------------------------------------------------
 function RateLimitBanner({ onDismiss }: { onDismiss: () => void }) {
   return (
@@ -402,6 +594,7 @@ function RepoChatInner() {
   const [draft,      setDraft]      = useState('');
   const [ctxStats,   setCtxStats]   = useState<ContextStats>(null);
   const [sideTab,    setSideTab]    = useState<'suggestions'|'files'>('suggestions');
+  const [showOnboarding, setShowOnboarding] = useState(false);
 
   const scrollRef  = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -574,6 +767,10 @@ function RepoChatInner() {
   const isMac = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform);
 
   return (
+    <>
+    {showOnboarding && (
+      <OnboardingModal repoData={repoData} onClose={() => setShowOnboarding(false)} />
+    )}
     <main className="h-screen bg-slate-950 flex flex-col overflow-hidden">
       {/* ── Header ── */}
       <header className="flex-shrink-0 border-b border-slate-800 bg-slate-900/80 backdrop-blur px-4 py-3 flex items-center gap-3">
@@ -646,6 +843,17 @@ function RepoChatInner() {
                 {tab === 'suggestions' ? '💡 Suggestions' : '🗂️ Files'}
               </button>
             ))}
+          </div>
+
+          {/* Onboarding guide button — lives between tabs and tab content */}
+          <div className="flex-shrink-0 px-3 pt-3">
+            <button
+              onClick={() => setShowOnboarding(true)}
+              className="w-full flex items-center justify-center gap-2 rounded-xl bg-emerald-700/20 hover:bg-emerald-700/30 border border-emerald-600/30 hover:border-emerald-500/50 text-emerald-300 hover:text-emerald-200 text-xs font-medium py-2.5 transition-all"
+            >
+              <span>📋</span>
+              Generate Onboarding Guide
+            </button>
           </div>
 
           <div className="flex-1 overflow-y-auto p-3 scrollbar-thin">
@@ -733,6 +941,7 @@ function RepoChatInner() {
         </div>
       </div>
     </main>
+    </>
   );
 }
 
