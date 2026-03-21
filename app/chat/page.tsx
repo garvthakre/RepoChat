@@ -73,6 +73,72 @@ function renderMarkdown(text: string): string {
     .replace(/\n/g, '<br/>');
 }
 
+// ---- Confidence classifier --------------------------------------------------
+// Scans assistant response text for hedging phrases and maps them to one of
+// three tiers. Earlier / stronger signals take priority via ordered matching.
+
+type ConfidenceLevel = 'high' | 'partial' | 'guessing';
+
+interface ConfidenceResult {
+  level: ConfidenceLevel;
+  reason: string;
+}
+
+const CONFIDENCE_SIGNALS: { pattern: RegExp; level: ConfidenceLevel; reason: string }[] = [
+  // Guessing — explicit uncertainty about what the code actually does
+  { pattern: /\bi('m| am) not (sure|certain|able to (confirm|verify))/i,             level: 'guessing', reason: "Model flagged uncertainty" },
+  { pattern: /\b(can't|cannot|could not|couldn't) (find|see|confirm|verify|determine)/i, level: 'guessing', reason: "Information not found in context" },
+  { pattern: /\b(not|isn't|isn'?t) (covered|mentioned|documented|included|visible|available) in (the )?(context|provided|repo|readme|files)/i, level: 'guessing', reason: "Outside loaded context" },
+  { pattern: /\bwithout (access to|seeing) (the )?(full |actual |source )?code/i,    level: 'guessing', reason: "Source code not in context" },
+  { pattern: /\b(likely|probably|possibly|perhaps|maybe) (implemented|defined|located|stored|handled)/i, level: 'guessing', reason: "Inferred, not confirmed from files" },
+  { pattern: /\bmy (best )?(guess|assumption) (is|would be)/i,                        level: 'guessing', reason: "Explicit guess" },
+  { pattern: /\bcannot (say|tell|determine|confirm) (for sure|with certainty|definitively)/i, level: 'guessing', reason: "Cannot confirm" },
+
+  // Partial — has some context but not complete picture
+  { pattern: /\b(the |this )?(readme|readme\.md) (doesn'?t|does not) (mention|cover|include|describe|explain)/i, level: 'partial', reason: "README doesn't cover this" },
+  { pattern: /\bbased on (the )?(file (structure|tree|list)|directory|folder)/i,      level: 'partial', reason: "Inferred from file structure only" },
+  { pattern: /\bbased on (the )?(available|provided|loaded|given) (context|files|information)/i, level: 'partial', reason: "Working from partial context" },
+  { pattern: /\b(only|just) (have|see|loaded|available) (a )?(partial|limited|subset|small)/i, level: 'partial', reason: "Limited files loaded" },
+  { pattern: /\b(not all|not every|some) (files?|code|source) (was|were|has been|have been) loaded/i, level: 'partial', reason: "Incomplete file context" },
+  { pattern: /\bthe (file|content|source) (wasn'?t|was not|isn'?t|is not) (loaded|fetched|available|included)/i, level: 'partial', reason: "File not in context" },
+  { pattern: /\b(from|looking at) (the )?(file (names?|list|tree)|project structure|directory)/i, level: 'partial', reason: "Inferred from structure" },
+  { pattern: /\bappears? to (be|use|follow|implement|handle)/i,                       level: 'partial', reason: "Appearance-based inference" },
+  { pattern: /\bseems? (to|like it) (be|use|follow|implement)/i,                      level: 'partial', reason: "Appearance-based inference" },
+  { pattern: /\btypically (in|with|for) (this kind|this type|projects? like)/i,        level: 'partial', reason: "Based on common patterns" },
+];
+
+function classifyConfidence(text: string): ConfidenceResult {
+  const lower = text.toLowerCase();
+  for (const { pattern, level, reason } of CONFIDENCE_SIGNALS) {
+    if (pattern.test(lower)) return { level, reason };
+  }
+  return { level: 'high', reason: 'Answer drawn from loaded file context' };
+}
+
+// ---- Confidence pill ---------------------------------------------------------
+const CONFIDENCE_CONFIG: Record<ConfidenceLevel, { label: string; dot: string; pill: string; tooltip: string }> = {
+  high:     { label: 'High confidence',  dot: 'bg-emerald-400', pill: 'text-emerald-300 border-emerald-700/50 bg-emerald-900/20', tooltip: 'Answer drawn directly from loaded file content' },
+  partial:  { label: 'Partial context',  dot: 'bg-amber-400',   pill: 'text-amber-300   border-amber-700/50   bg-amber-900/20',   tooltip: 'Answer partly inferred — not all relevant files were loaded' },
+  guessing: { label: 'Guessing',         dot: 'bg-red-400',     pill: 'text-red-300     border-red-700/50     bg-red-900/20',     tooltip: 'Model flagged uncertainty — treat this answer with caution' },
+};
+
+function ConfidencePill({ content }: { content: string }) {
+  const { level, reason } = classifyConfidence(content);
+  const cfg = CONFIDENCE_CONFIG[level];
+  return (
+    <div className="flex items-center gap-1.5 mt-2.5 pt-2.5 border-t border-slate-700/50">
+      <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${cfg.dot}`} />
+      <span
+        className={`inline-flex items-center text-[10px] font-medium border rounded-full px-2 py-0.5 ${cfg.pill}`}
+        title={`${cfg.tooltip}\n\nDetected signal: ${reason}`}
+      >
+        {cfg.label}
+      </span>
+      <span className="text-[10px] text-slate-600 truncate hidden sm:block" title={reason}>{reason}</span>
+    </div>
+  );
+}
+
 // ---- Message bubble ----------------------------------------------------------
 function MessageBubble({ message }: { message: ChatMessage }) {
   if (message.role === 'user') {
@@ -88,6 +154,7 @@ function MessageBubble({ message }: { message: ChatMessage }) {
     <div className="flex justify-start mb-4">
       <div className="max-w-[85%] bg-slate-800 border border-slate-700 text-slate-100 rounded-2xl rounded-tl-sm px-4 py-3 text-sm leading-relaxed shadow-md">
         <div className="prose-custom" dangerouslySetInnerHTML={{ __html: renderMarkdown(message.content) }} />
+        <ConfidencePill content={message.content} />
       </div>
     </div>
   );
