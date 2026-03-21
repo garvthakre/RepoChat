@@ -25,7 +25,10 @@ type RepoData = {
 
 type ChatMessage = { role: 'user' | 'assistant'; content: string };
 
-// Simple markdown renderer for code blocks and basic formatting
+// Context stats returned via response headers
+type ContextStats = { filesLoaded: number; contextChars: number } | null;
+
+// ─── Markdown renderer ────────────────────────────────────────────────────────
 function renderMarkdown(text: string): string {
   const escaped = text
     .replace(/&/g, '&amp;')
@@ -50,10 +53,9 @@ function renderMarkdown(text: string): string {
     .replace(/\n/g, '<br/>');
 }
 
+// ─── Message bubble ───────────────────────────────────────────────────────────
 function MessageBubble({ message }: { message: ChatMessage }) {
-  const isUser = message.role === 'user';
-
-  if (isUser) {
+  if (message.role === 'user') {
     return (
       <div className="flex justify-end mb-4">
         <div className="max-w-[80%] bg-violet-600 text-white rounded-2xl rounded-tr-sm px-4 py-3 text-sm leading-relaxed shadow-lg">
@@ -62,7 +64,6 @@ function MessageBubble({ message }: { message: ChatMessage }) {
       </div>
     );
   }
-
   return (
     <div className="flex justify-start mb-4">
       <div className="max-w-[85%] bg-slate-800 border border-slate-700 text-slate-100 rounded-2xl rounded-tl-sm px-4 py-3 text-sm leading-relaxed shadow-md">
@@ -90,6 +91,7 @@ function TypingIndicator() {
   );
 }
 
+// ─── Loading screen ───────────────────────────────────────────────────────────
 const LOAD_STEPS = [
   { key: 'step1', label: 'Fetching repository metadata', icon: '🔍' },
   { key: 'step2', label: 'Reading README', icon: '📄' },
@@ -99,7 +101,6 @@ const LOAD_STEPS = [
 
 function LoadingScreen({ owner, repo, status }: { owner: string; repo: string; status: string }) {
   const currentIdx = LOAD_STEPS.findIndex((s) => s.key === status);
-
   return (
     <main className="min-h-screen bg-slate-950 flex items-center justify-center px-4">
       <div className="w-full max-w-md">
@@ -116,13 +117,17 @@ function LoadingScreen({ owner, repo, status }: { owner: string; repo: string; s
               <p className="text-slate-400 text-xs font-mono">{owner}/{repo}</p>
             </div>
           </div>
-
           <div className="space-y-3">
             {LOAD_STEPS.map((step, idx) => {
               const done = currentIdx > idx;
               const active = currentIdx === idx;
               return (
-                <div key={step.key} className={`flex items-center gap-3 p-3 rounded-xl transition-all duration-300 ${active ? 'bg-violet-600/10 border border-violet-500/20' : done ? 'opacity-50' : 'opacity-30'}`}>
+                <div
+                  key={step.key}
+                  className={`flex items-center gap-3 p-3 rounded-xl transition-all duration-300 ${
+                    active ? 'bg-violet-600/10 border border-violet-500/20' : done ? 'opacity-50' : 'opacity-30'
+                  }`}
+                >
                   <span className="text-base">{done ? '✅' : step.icon}</span>
                   <span className={`text-sm ${active ? 'text-violet-200' : done ? 'text-slate-400' : 'text-slate-500'}`}>
                     {step.label}
@@ -130,7 +135,11 @@ function LoadingScreen({ owner, repo, status }: { owner: string; repo: string; s
                   {active && (
                     <div className="ml-auto flex gap-1">
                       {[0, 1, 2].map((i) => (
-                        <span key={i} className="w-1.5 h-1.5 rounded-full bg-violet-400 animate-bounce" style={{ animationDelay: `${i * 100}ms` }} />
+                        <span
+                          key={i}
+                          className="w-1.5 h-1.5 rounded-full bg-violet-400 animate-bounce"
+                          style={{ animationDelay: `${i * 100}ms` }}
+                        />
                       ))}
                     </div>
                   )}
@@ -144,7 +153,7 @@ function LoadingScreen({ owner, repo, status }: { owner: string; repo: string; s
   );
 }
 
-// Suggestions grid shown in the empty state — used on both desktop (sidebar) and mobile (inline)
+// ─── Suggestions grid ─────────────────────────────────────────────────────────
 function SuggestionsGrid({
   suggestions,
   onSelect,
@@ -170,6 +179,199 @@ function SuggestionsGrid({
   );
 }
 
+// ─── File explorer ────────────────────────────────────────────────────────────
+type FileTree = { [key: string]: FileTree | null };
+
+function buildTree(paths: string[]): FileTree {
+  const root: FileTree = {};
+  for (const path of paths) {
+    const parts = path.split('/');
+    let node = root;
+    for (let i = 0; i < parts.length; i++) {
+      const part = parts[i];
+      if (i === parts.length - 1) {
+        node[part] = null; // leaf = file
+      } else {
+        if (!node[part]) node[part] = {};
+        node = node[part] as FileTree;
+      }
+    }
+  }
+  return root;
+}
+
+function FileNode({
+  name,
+  node,
+  depth,
+  pathSoFar,
+  onFileClick,
+}: {
+  name: string;
+  node: FileTree | null;
+  depth: number;
+  pathSoFar: string;
+  onFileClick: (path: string) => void;
+}) {
+  const [open, setOpen] = useState(depth === 0);
+  const fullPath = pathSoFar ? `${pathSoFar}/${name}` : name;
+  const isFile = node === null;
+
+  if (isFile) {
+    return (
+      <button
+        onClick={() => onFileClick(fullPath)}
+        className="flex items-center gap-1.5 w-full text-left text-xs text-slate-400 hover:text-violet-300 hover:bg-slate-800/60 rounded px-1.5 py-0.5 transition-colors group"
+        style={{ paddingLeft: `${(depth + 1) * 10 + 6}px` }}
+        title={fullPath}
+      >
+        <span className="flex-shrink-0 opacity-50 group-hover:opacity-100">📄</span>
+        <span className="truncate">{name}</span>
+      </button>
+    );
+  }
+
+  const children = Object.entries(node as FileTree).sort(([aName, aNode], [bName, bNode]) => {
+    // folders first
+    const aIsDir = aNode !== null;
+    const bIsDir = bNode !== null;
+    if (aIsDir !== bIsDir) return aIsDir ? -1 : 1;
+    return aName.localeCompare(bName);
+  });
+
+  return (
+    <div>
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="flex items-center gap-1.5 w-full text-left text-xs text-slate-300 hover:text-white hover:bg-slate-800/60 rounded px-1.5 py-0.5 transition-colors"
+        style={{ paddingLeft: `${depth * 10 + 6}px` }}
+      >
+        <span className="flex-shrink-0 text-slate-500 w-3 text-center">{open ? '▾' : '▸'}</span>
+        <span className="text-slate-500 flex-shrink-0">📁</span>
+        <span className="truncate font-medium">{name}</span>
+      </button>
+      {open && (
+        <div>
+          {children.map(([childName, childNode]) => (
+            <FileNode
+              key={childName}
+              name={childName}
+              node={childNode}
+              depth={depth + 1}
+              pathSoFar={fullPath}
+              onFileClick={onFileClick}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function FileExplorer({
+  files,
+  onFileClick,
+}: {
+  files: string[];
+  onFileClick: (path: string) => void;
+}) {
+  const tree = useMemo(() => buildTree(files), [files]);
+  const rootEntries = Object.entries(tree).sort(([aName, aNode], [bName, bNode]) => {
+    const aIsDir = aNode !== null;
+    const bIsDir = bNode !== null;
+    if (aIsDir !== bIsDir) return aIsDir ? -1 : 1;
+    return aName.localeCompare(bName);
+  });
+
+  return (
+    <div className="select-none">
+      {rootEntries.map(([name, node]) => (
+        <FileNode
+          key={name}
+          name={name}
+          node={node}
+          depth={0}
+          pathSoFar=""
+          onFileClick={onFileClick}
+        />
+      ))}
+    </div>
+  );
+}
+
+// ─── Context indicator pill ───────────────────────────────────────────────────
+function ContextPill({ stats }: { stats: ContextStats }) {
+  if (!stats) return null;
+  const kb = Math.round(stats.contextChars / 1000);
+  return (
+    <div
+      className="hidden sm:flex items-center gap-1.5 text-xs text-slate-400 bg-slate-800/80 border border-slate-700/60 rounded-full px-2.5 py-1"
+      title={`${stats.filesLoaded} files loaded · ${stats.contextChars.toLocaleString()} characters of context`}
+    >
+      <span className="text-slate-500">📄</span>
+      <span>
+        {stats.filesLoaded} file{stats.filesLoaded !== 1 ? 's' : ''} loaded
+      </span>
+      <span className="text-slate-600">·</span>
+      <span>~{kb}k chars</span>
+    </div>
+  );
+}
+
+// ─── Rate limit banner ────────────────────────────────────────────────────────
+function RateLimitBanner({ onDismiss }: { onDismiss: () => void }) {
+  return (
+    <div className="flex items-start gap-3 mx-4 mb-3 rounded-xl bg-amber-950/60 border border-amber-700/50 px-4 py-3 text-xs text-amber-200">
+      <span className="text-lg flex-shrink-0">⚠️</span>
+      <div className="flex-1 leading-relaxed">
+        <strong className="text-amber-100">GitHub rate limit hit.</strong> Add a{' '}
+        <code className="bg-amber-900/60 px-1 rounded">GITHUB_TOKEN</code> to your{' '}
+        <code className="bg-amber-900/60 px-1 rounded">.env</code> to get 5,000 requests/hour
+        instead of 60.{' '}
+        <a
+          href="https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens"
+          target="_blank"
+          rel="noreferrer"
+          className="underline hover:text-amber-100"
+        >
+          Learn how →
+        </a>
+      </div>
+      <button onClick={onDismiss} className="flex-shrink-0 text-amber-500 hover:text-amber-300">✕</button>
+    </div>
+  );
+}
+
+// ─── Session storage helpers ──────────────────────────────────────────────────
+function sessionKey(owner: string, repo: string) {
+  return `repochat:${owner}/${repo}`;
+}
+
+function saveSession(owner: string, repo: string, messages: ChatMessage[], repoData: RepoData) {
+  try {
+    sessionStorage.setItem(
+      sessionKey(owner, repo),
+      JSON.stringify({ messages, repoData, savedAt: Date.now() })
+    );
+  } catch {
+    // sessionStorage may be unavailable (private browsing quota, etc.)
+  }
+}
+
+function loadSession(owner: string, repo: string): { messages: ChatMessage[]; repoData: RepoData } | null {
+  try {
+    const raw = sessionStorage.getItem(sessionKey(owner, repo));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    // Expire after 30 minutes
+    if (Date.now() - parsed.savedAt > 30 * 60 * 1000) return null;
+    return { messages: parsed.messages, repoData: parsed.repoData };
+  } catch {
+    return null;
+  }
+}
+
+// ─── Main chat component ──────────────────────────────────────────────────────
 function RepoChatInner() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -179,25 +381,45 @@ function RepoChatInner() {
   const [repoData, setRepoData] = useState<RepoData | null>(null);
   const [status, setStatus] = useState<'idle' | 'step1' | 'step2' | 'step3' | 'step4' | 'ready'>('idle');
   const [error, setError] = useState('');
+  const [rateLimited, setRateLimited] = useState(false);
+
   const [messageInput, setMessageInput] = useState('');
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [streaming, setStreaming] = useState(false);
   const [assistantDraft, setAssistantDraft] = useState('');
+  const [contextStats, setContextStats] = useState<ContextStats>(null);
+
+  // Sidebar tab: 'suggestions' | 'files'
+  const [sidebarTab, setSidebarTab] = useState<'suggestions' | 'files'>('suggestions');
+
   const scrollRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
+  // ── Load repo (with session restore) ───────────────────────────────────────
   useEffect(() => {
     if (!owner || !repo) {
       setError('Missing owner and repo parameters.');
       return;
     }
 
+    // Try restoring from session first
+    const cached = loadSession(owner, repo);
+    if (cached) {
+      setRepoData(cached.repoData);
+      setMessages(cached.messages);
+      setStatus('ready');
+      return;
+    }
+
     const loadRepo = async () => {
       try {
         setStatus('step1');
-        const raw = await fetch(`/api/repo?owner=${encodeURIComponent(owner)}&repo=${encodeURIComponent(repo)}`);
+        const raw = await fetch(
+          `/api/repo?owner=${encodeURIComponent(owner)}&repo=${encodeURIComponent(repo)}`
+        );
         if (!raw.ok) {
           const body = await raw.json();
+          if (body?.rateLimited) setRateLimited(true);
           setError(body?.error || 'Repository not found');
           return;
         }
@@ -215,15 +437,24 @@ function RepoChatInner() {
       }
     };
 
-    loadRepo();
+    void loadRepo();
   }, [owner, repo]);
 
+  // ── Persist to session whenever messages or repoData change ─────────────────
+  useEffect(() => {
+    if (repoData && owner && repo) {
+      saveSession(owner, repo, messages, repoData);
+    }
+  }, [messages, repoData, owner, repo]);
+
+  // ── Auto-scroll ─────────────────────────────────────────────────────────────
   useEffect(() => {
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
   }, [messages, assistantDraft]);
 
+  // ── Textarea auto-resize ────────────────────────────────────────────────────
   useEffect(() => {
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto';
@@ -231,6 +462,7 @@ function RepoChatInner() {
     }
   }, [messageInput]);
 
+  // ── Detected suggestions ────────────────────────────────────────────────────
   const detectedSuggestions = useMemo(() => {
     if (!repoData) return [];
     const files = repoData.files;
@@ -240,69 +472,89 @@ function RepoChatInner() {
       'What is the overall architecture of this project?',
     ];
     if (files.some((f) => /dockerfile/i.test(f))) suggestions.push('How can I run this with Docker?');
-    if (files.some((f) => /\btest\b|__tests__|jest\.config|pytest\.ini|spec\./i.test(f))) suggestions.push('How do I run the test suite?');
-    if (files.some((f) => /api\/|\/api\/|pages\/api/i.test(f))) suggestions.push('What API routes are available and what do they do?');
-    if (files.some((f) => /prisma\/schema/i.test(f))) suggestions.push('Explain the Prisma database schema.');
-    if (files.some((f) => /\.env\.example|\.env\.sample/i.test(f))) suggestions.push('What environment variables does this project need?');
-    if (files.some((f) => /github\/workflows\//i.test(f))) suggestions.push('What CI/CD workflows are configured?');
+    if (files.some((f) => /\btest\b|__tests__|jest\.config|pytest\.ini|spec\./i.test(f)))
+      suggestions.push('How do I run the test suite?');
+    if (files.some((f) => /api\/|\/api\/|pages\/api/i.test(f)))
+      suggestions.push('What API routes are available and what do they do?');
+    if (files.some((f) => /prisma\/schema/i.test(f)))
+      suggestions.push('Explain the Prisma database schema.');
+    if (files.some((f) => /\.env\.example|\.env\.sample/i.test(f)))
+      suggestions.push('What environment variables does this project need?');
+    if (files.some((f) => /github\/workflows\//i.test(f)))
+      suggestions.push('What CI/CD workflows are configured?');
     return suggestions;
   }, [repoData]);
 
-  const sendMessage = useCallback(async (content?: string) => {
-    const text = (content ?? messageInput).trim();
-    if (!text || streaming) return;
+  // ── Send message ─────────────────────────────────────────────────────────────
+  const sendMessage = useCallback(
+    async (content?: string) => {
+      const text = (content ?? messageInput).trim();
+      if (!text || streaming) return;
 
-    const userMessage: ChatMessage = { role: 'user', content: text };
-    setMessages((prev) => [...prev, userMessage]);
-    setMessageInput('');
-    setAssistantDraft('');
-    setStreaming(true);
+      const userMessage: ChatMessage = { role: 'user', content: text };
+      setMessages((prev) => [...prev, userMessage]);
+      setMessageInput('');
+      setAssistantDraft('');
+      setStreaming(true);
 
-    try {
-      const payload = {
-        owner: repoData?.owner,
-        repo: repoData?.repo,
-        messages: [...messages, userMessage],
-      };
+      try {
+        const payload = {
+          owner: repoData?.owner,
+          repo: repoData?.repo,
+          messages: [...messages, userMessage],
+        };
 
-      const response = await fetch('/api/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
+        const response = await fetch('/api/chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
 
-      if (!response.ok || !response.body) {
-        const errBody = await response.json().catch(() => ({ error: 'Unknown error' }));
+        if (!response.ok || !response.body) {
+          const errBody = await response.json().catch(() => ({ error: 'Unknown error' }));
+          if (errBody?.rateLimited) setRateLimited(true);
+          setMessages((prev) => [
+            ...prev,
+            { role: 'assistant', content: `❌ Error: ${errBody.error ?? 'Failed to get response'}` },
+          ]);
+          setStreaming(false);
+          return;
+        }
+
+        // Read context stats from headers (only meaningful on first call)
+        const filesLoaded = response.headers.get('X-Context-Files-Loaded');
+        const contextChars = response.headers.get('X-Context-Chars');
+        if (filesLoaded && contextChars) {
+          setContextStats({
+            filesLoaded: parseInt(filesLoaded, 10),
+            contextChars: parseInt(contextChars, 10),
+          });
+        }
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let fullText = '';
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          fullText += decoder.decode(value, { stream: true });
+          setAssistantDraft(fullText);
+        }
+
+        setMessages((prev) => [...prev, { role: 'assistant', content: fullText }]);
+        setAssistantDraft('');
+      } catch {
         setMessages((prev) => [
           ...prev,
-          { role: 'assistant', content: `❌ Error: ${errBody.error ?? 'Failed to get response'}` },
+          { role: 'assistant', content: '❌ Network error. Please try again.' },
         ]);
+      } finally {
         setStreaming(false);
-        return;
       }
-
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let fullText = '';
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        fullText += decoder.decode(value, { stream: true });
-        setAssistantDraft(fullText);
-      }
-
-      setMessages((prev) => [...prev, { role: 'assistant', content: fullText }]);
-      setAssistantDraft('');
-    } catch {
-      setMessages((prev) => [
-        ...prev,
-        { role: 'assistant', content: '❌ Network error. Please try again.' },
-      ]);
-    } finally {
-      setStreaming(false);
-    }
-  }, [messageInput, messages, repoData, streaming]);
+    },
+    [messageInput, messages, repoData, streaming]
+  );
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -311,13 +563,38 @@ function RepoChatInner() {
     }
   };
 
+  const handleFileClick = useCallback(
+    (path: string) => {
+      void sendMessage(`Show me the code in \`${path}\``);
+    },
+    [sendMessage]
+  );
+
+  // ── Error screen ─────────────────────────────────────────────────────────────
   if (error) {
     return (
       <main className="min-h-screen bg-slate-950 text-white flex items-center justify-center px-4">
         <div className="w-full max-w-md rounded-2xl border border-red-900/50 bg-slate-900 p-8 text-center">
           <div className="text-4xl mb-4">⚠️</div>
-          <h2 className="text-xl font-bold text-red-300 mb-2">Error</h2>
-          <p className="text-slate-300 text-sm mb-6">{error}</p>
+          <h2 className="text-xl font-bold text-red-300 mb-2">
+            {rateLimited ? 'GitHub Rate Limit Hit' : 'Error'}
+          </h2>
+          <p className="text-slate-300 text-sm mb-4 leading-relaxed">{error}</p>
+          {rateLimited && (
+            <div className="rounded-lg bg-amber-950/40 border border-amber-800/50 px-4 py-3 text-xs text-amber-300 text-left mb-4 leading-relaxed">
+              Add a <code className="bg-amber-900/60 px-1 rounded">GITHUB_TOKEN</code> to your{' '}
+              <code className="bg-amber-900/60 px-1 rounded">.env</code> file to increase the limit
+              from 60 to 5,000 requests/hour.{' '}
+              <a
+                href="https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens"
+                target="_blank"
+                rel="noreferrer"
+                className="underline hover:text-amber-100"
+              >
+                Create a token →
+              </a>
+            </div>
+          )}
           <button
             onClick={() => router.push('/')}
             className="rounded-xl bg-violet-600 hover:bg-violet-500 px-6 py-2.5 font-semibold text-sm transition-colors"
@@ -338,7 +615,7 @@ function RepoChatInner() {
 
   return (
     <main className="h-screen bg-slate-950 flex flex-col overflow-hidden">
-      {/* Top bar */}
+      {/* ── Top bar ── */}
       <header className="flex-shrink-0 border-b border-slate-800 bg-slate-900/80 backdrop-blur px-4 py-3 flex items-center gap-3">
         <button
           onClick={() => router.push('/')}
@@ -353,18 +630,25 @@ function RepoChatInner() {
           </svg>
           <span className="text-sm font-mono text-slate-200 truncate">{metadata.name}</span>
         </div>
-        <div className="flex items-center gap-2 ml-auto text-xs text-slate-500">
-          <span className="hidden sm:inline">⭐ {metadata.stars.toLocaleString()}</span>
-          {metadata.language && <span className="hidden sm:inline rounded-full bg-slate-800 px-2 py-0.5">{metadata.language}</span>}
+
+        {/* Context indicator pill */}
+        <div className="ml-auto flex items-center gap-2">
+          <ContextPill stats={contextStats} />
+          <span className="hidden sm:inline text-xs text-slate-500">⭐ {metadata.stars.toLocaleString()}</span>
+          {metadata.language && (
+            <span className="hidden sm:inline text-xs rounded-full bg-slate-800 px-2 py-0.5 text-slate-400">
+              {metadata.language}
+            </span>
+          )}
         </div>
       </header>
 
-      {/* Main layout */}
+      {/* ── Main layout ── */}
       <div className="flex flex-1 overflow-hidden">
-        {/* Sidebar */}
-        <aside className="hidden lg:flex flex-col w-72 xl:w-80 flex-shrink-0 border-r border-slate-800 bg-slate-900 overflow-y-auto">
-          <div className="p-4 space-y-4">
-            {/* Repo card */}
+        {/* ── Sidebar ── */}
+        <aside className="hidden lg:flex flex-col w-72 xl:w-80 flex-shrink-0 border-r border-slate-800 bg-slate-900 overflow-hidden">
+          {/* Repo card */}
+          <div className="flex-shrink-0 p-4 border-b border-slate-800">
             <div className="rounded-xl bg-slate-950 border border-slate-800 p-4">
               <h3 className="font-semibold text-white text-sm mb-1">{metadata.name}</h3>
               <p className="text-xs text-slate-400 leading-relaxed mb-3">
@@ -412,30 +696,58 @@ function RepoChatInner() {
                 View on GitHub
               </a>
             </div>
+          </div>
 
-            {/* Suggested questions — sidebar (desktop) */}
-            {messages.length === 0 && (
-              <div>
-                <p className="text-xs font-medium text-slate-500 uppercase tracking-wider mb-2">Suggested Questions</p>
-                <div className="space-y-1.5">
-                  {detectedSuggestions.map((q) => (
-                    <button
-                      key={q}
-                      onClick={() => void sendMessage(q)}
-                      disabled={streaming}
-                      className="w-full text-left text-xs text-slate-300 hover:text-white bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-lg px-3 py-2.5 transition-colors disabled:opacity-50 leading-relaxed"
-                    >
-                      {q}
-                    </button>
-                  ))}
-                </div>
+          {/* Tab switcher */}
+          <div className="flex-shrink-0 flex border-b border-slate-800">
+            <button
+              onClick={() => setSidebarTab('suggestions')}
+              className={`flex-1 text-xs font-medium py-2.5 transition-colors ${
+                sidebarTab === 'suggestions'
+                  ? 'text-violet-300 border-b-2 border-violet-500'
+                  : 'text-slate-500 hover:text-slate-300'
+              }`}
+            >
+              💡 Suggestions
+            </button>
+            <button
+              onClick={() => setSidebarTab('files')}
+              className={`flex-1 text-xs font-medium py-2.5 transition-colors ${
+                sidebarTab === 'files'
+                  ? 'text-violet-300 border-b-2 border-violet-500'
+                  : 'text-slate-500 hover:text-slate-300'
+              }`}
+            >
+              🗂️ Files
+            </button>
+          </div>
+
+          {/* Tab content */}
+          <div className="flex-1 overflow-y-auto p-3 scrollbar-thin">
+            {sidebarTab === 'suggestions' ? (
+              <div className="space-y-1.5">
+                {detectedSuggestions.map((q) => (
+                  <button
+                    key={q}
+                    onClick={() => void sendMessage(q)}
+                    disabled={streaming}
+                    className="w-full text-left text-xs text-slate-300 hover:text-white bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-lg px-3 py-2.5 transition-colors disabled:opacity-50 leading-relaxed"
+                  >
+                    {q}
+                  </button>
+                ))}
               </div>
+            ) : (
+              <FileExplorer files={repoData.files} onFileClick={handleFileClick} />
             )}
           </div>
         </aside>
 
-        {/* Chat area */}
+        {/* ── Chat area ── */}
         <div className="flex flex-col flex-1 overflow-hidden">
+          {/* Rate limit banner */}
+          {rateLimited && <RateLimitBanner onDismiss={() => setRateLimited(false)} />}
+
           {/* Messages */}
           <div ref={scrollRef} className="flex-1 overflow-y-auto px-4 py-4 space-y-1 scrollbar-thin">
             {messages.length === 0 && !assistantDraft && (
@@ -449,8 +761,6 @@ function RepoChatInner() {
                     Ask anything about this codebase — architecture, how to run it, specific files, and more.
                   </p>
                 </div>
-
-                {/* Full suggestions grid — visible on ALL screen sizes */}
                 <SuggestionsGrid
                   suggestions={detectedSuggestions}
                   onSelect={(q) => void sendMessage(q)}
@@ -519,11 +829,13 @@ function RepoChatInner() {
 
 export default function ChatPage() {
   return (
-    <Suspense fallback={
-      <div className="min-h-screen bg-slate-950 flex items-center justify-center">
-        <div className="text-slate-400 text-sm">Loading...</div>
-      </div>
-    }>
+    <Suspense
+      fallback={
+        <div className="min-h-screen bg-slate-950 flex items-center justify-center">
+          <div className="text-slate-400 text-sm">Loading...</div>
+        </div>
+      }
+    >
       <RepoChatInner />
     </Suspense>
   );

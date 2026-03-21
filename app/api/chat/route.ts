@@ -17,18 +17,16 @@ const TEXT_EXTENSIONS = new Set([
 ]);
 
 // Max size per file in bytes — skip anything larger to keep the prompt lean
-const MAX_FILE_BYTES = 8_000;
+const MAX_FILE_BYTES = 3_000;
 // Max total characters of file content to inject into the prompt
-const MAX_TOTAL_CONTENT_CHARS = 40_000;
+const MAX_TOTAL_CONTENT_CHARS = 8_000;
 // Max number of files to fetch content for
-const MAX_FILES_TO_FETCH = 20;
+const MAX_FILES_TO_FETCH = 8;
 
 function isTextFile(path: string): boolean {
   const lower = path.toLowerCase();
   const base = lower.split('/').pop() ?? lower;
-  // Dotfiles without extension (e.g. .gitignore, .env.example)
   if (base.startsWith('.') && !base.slice(1).includes('.')) return true;
-  // Special filenames
   if (['dockerfile', 'makefile', 'procfile', 'rakefile'].includes(base)) return true;
   const ext = base.split('.').pop() ?? '';
   return TEXT_EXTENSIONS.has(ext);
@@ -43,6 +41,10 @@ async function fetchJson(url: string, token?: string) {
   const response = await fetch(url, { headers });
   if (!response.ok) {
     const errorText = await response.text();
+    // Detect rate limit specifically
+    if (response.status === 403 || response.status === 429) {
+      throw new Error(`RATE_LIMIT:${response.status}`);
+    }
     throw new Error(`GitHub API error ${response.status} ${response.statusText}: ${errorText}`);
   }
   return response.json();
@@ -65,12 +67,10 @@ async function fetchFileContent(
     const res = await fetch(url, { headers });
     if (!res.ok) return null;
 
-    // Respect max file size — check Content-Length if available
     const contentLength = res.headers.get('content-length');
     if (contentLength && parseInt(contentLength, 10) > MAX_FILE_BYTES) return null;
 
     const text = await res.text();
-    // Double-check after reading
     if (text.length > MAX_FILE_BYTES) return null;
 
     return text;
@@ -79,10 +79,6 @@ async function fetchFileContent(
   }
 }
 
-/**
- * Pick the most "important" files to fetch content for.
- * Priority: config/entry files first, then source files, then the rest.
- */
 function prioritizeFiles(files: string[]): string[] {
   const priority: string[] = [];
   const rest: string[] = [];
@@ -154,7 +150,6 @@ function buildSystemPrompt({
   if (fileList.length > 100) lines.push('\n[File list truncated to 100 entries]');
   lines.push('');
 
-  // Inject actual file contents
   const fetchedPaths = Object.keys(fileContents);
   if (fetchedPaths.length > 0) {
     lines.push(`=== FILE CONTENTS (${fetchedPaths.length} files) ===`);
@@ -195,7 +190,6 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    // Fetch repo context in parallel
     const [repoResp, topicsResp, treeResp] = await Promise.all([
       fetchJson(`${GITHUB_BASE}/repos/${owner}/${repo}`, token),
       fetchJson(`${GITHUB_BASE}/repos/${owner}/${repo}/topics`, token),
@@ -220,11 +214,9 @@ export async function POST(request: NextRequest) {
     });
     const readme = readmeRes.ok ? await readmeRes.text() : '';
 
-    // --- File content fetching ---
     const candidateFiles = allFiles.filter(isTextFile);
     const prioritized = prioritizeFiles(candidateFiles).slice(0, MAX_FILES_TO_FETCH);
 
-    // Fetch all candidate files in parallel, then filter out nulls
     const fetchResults = await Promise.all(
       prioritized.map(async (path) => {
         const content = await fetchFileContent(owner, repo, path, token);
@@ -232,7 +224,6 @@ export async function POST(request: NextRequest) {
       })
     );
 
-    // Build fileContents map, respecting total character budget
     const fileContents: Record<string, string> = {};
     let totalChars = 0;
 
@@ -242,6 +233,8 @@ export async function POST(request: NextRequest) {
       fileContents[result.path] = result.content;
       totalChars += result.content.length;
     }
+
+    const filesLoaded = Object.keys(fileContents).length;
 
     const systemPrompt = buildSystemPrompt({
       owner,
@@ -259,7 +252,6 @@ export async function POST(request: NextRequest) {
       fileContents,
     });
 
-    // Build messages for OpenAI-compatible Groq API
     const apiMessages = [
       { role: 'system', content: systemPrompt },
       ...messages
@@ -271,7 +263,6 @@ export async function POST(request: NextRequest) {
         .filter((m: { content: string }) => m.content.length > 0),
     ];
 
-    // Call Groq with streaming (OpenAI-compatible)
     const groqResponse = await fetch(GROQ_API_URL, {
       method: 'POST',
       headers: {
@@ -281,20 +272,33 @@ export async function POST(request: NextRequest) {
       body: JSON.stringify({
         model: 'llama-3.3-70b-versatile',
         messages: apiMessages,
-        max_tokens: 2048,
+        max_tokens: 8192,
         stream: true,
       }),
     });
 
     if (!groqResponse.ok || !groqResponse.body) {
       const errorText = await groqResponse.text();
+      // Surface Groq token-rate-limit as a friendly, retryable message
+      if (groqResponse.status === 429) {
+        let retryAfter = '';
+        try {
+          const parsed = JSON.parse(errorText);
+          const msg: string = parsed?.error?.message ?? '';
+          const match = msg.match(/try again in ([\d.]+s)/i);
+          if (match) retryAfter = ` Try again in ${match[1]}.`;
+        } catch { /* ignore */ }
+        return NextResponse.json(
+          { error: `Groq token rate limit reached.${retryAfter} This is a free-tier limit (12k tokens/min). Upgrade at https://console.groq.com/settings/billing or wait a moment.` },
+          { status: 429 }
+        );
+      }
       return NextResponse.json(
         { error: `Groq API error ${groqResponse.status}: ${errorText}` },
         { status: 500 }
       );
     }
 
-    // Forward the SSE stream, extracting text deltas
     const encoder = new TextEncoder();
     const decoder = new TextDecoder();
     const reader = groqResponse.body.getReader();
@@ -341,10 +345,26 @@ export async function POST(request: NextRequest) {
         'Content-Type': 'text/plain; charset=utf-8',
         'Cache-Control': 'no-cache, no-store, max-age=0',
         'X-Accel-Buffering': 'no',
+        // Context indicator headers — consumed by the frontend
+        'X-Context-Files-Loaded': String(filesLoaded),
+        'X-Context-Chars': String(totalChars),
       },
     });
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : 'Unknown error';
+
+    // Surface GitHub rate limit with a clear, actionable message
+    if (message.startsWith('RATE_LIMIT:') || message.includes('403') || /rate.?limit/i.test(message)) {
+      return NextResponse.json(
+        {
+          error:
+            'GitHub rate limit hit — add a GITHUB_TOKEN to your .env to get 5,000 requests/hour instead of 60. See: https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens',
+          rateLimited: true,
+        },
+        { status: 429 }
+      );
+    }
+
     return NextResponse.json({ error: message }, { status: 500 });
   }
 }

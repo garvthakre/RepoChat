@@ -11,6 +11,9 @@ async function fetchJson(url: string, token?: string) {
   const response = await fetch(url, { headers });
   if (!response.ok) {
     const errorText = await response.text();
+    if (response.status === 403 || response.status === 429) {
+      throw new Error(`RATE_LIMIT:${response.status}`);
+    }
     throw new Error(`GitHub API error ${response.status} ${response.statusText}: ${errorText}`);
   }
   return response.json();
@@ -34,14 +37,22 @@ export async function GET(request: NextRequest) {
     const branch = metadata.default_branch || 'HEAD';
     let treeResp: any;
     try {
-      treeResp = await fetchJson(`${GITHUB_BASE}/repos/${owner}/${repo}/git/trees/${encodeURIComponent(branch)}?recursive=1`, token);
+      treeResp = await fetchJson(
+        `${GITHUB_BASE}/repos/${owner}/${repo}/git/trees/${encodeURIComponent(branch)}?recursive=1`,
+        token
+      );
     } catch (err) {
-      // Fallback to HEAD for older endpoints
-      treeResp = await fetchJson(`${GITHUB_BASE}/repos/${owner}/${repo}/git/trees/HEAD?recursive=1`, token);
+      treeResp = await fetchJson(
+        `${GITHUB_BASE}/repos/${owner}/${repo}/git/trees/HEAD?recursive=1`,
+        token
+      );
     }
-    const rawTree: string[] = [];
 
-    const fileEntries = Array.isArray(treeResp.tree) ? treeResp.tree.filter((item: any) => item.type === 'blob') : [];
+    const rawTree: string[] = [];
+    const fileEntries = Array.isArray(treeResp.tree)
+      ? treeResp.tree.filter((item: any) => item.type === 'blob')
+      : [];
+
     for (const file of fileEntries) {
       const path = String(file.path);
       if (/node_modules|\.lock$|\.bak$/.test(path)) continue;
@@ -50,9 +61,7 @@ export async function GET(request: NextRequest) {
     }
 
     const readmeHeaders: Record<string, string> = { Accept: 'application/vnd.github.v3.raw' };
-    if (token) {
-      readmeHeaders.Authorization = `token ${token}`;
-    }
+    if (token) readmeHeaders.Authorization = `token ${token}`;
 
     const readmeResp = await fetch(`${GITHUB_BASE}/repos/${owner}/${repo}/readme`, {
       headers: readmeHeaders,
@@ -77,7 +86,20 @@ export async function GET(request: NextRequest) {
       readme: readmeText,
     });
   } catch (error: any) {
-    const status = error.message?.includes('404') ? 404 : 500;
-    return NextResponse.json({ error: error.message }, { status });
+    const msg: string = error.message ?? '';
+
+    if (msg.startsWith('RATE_LIMIT:') || /rate.?limit/i.test(msg)) {
+      return NextResponse.json(
+        {
+          error:
+            'GitHub rate limit hit — add a GITHUB_TOKEN to your .env to get 5,000 requests/hour instead of 60. See: https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens',
+          rateLimited: true,
+        },
+        { status: 429 }
+      );
+    }
+
+    const status = msg.includes('404') ? 404 : 500;
+    return NextResponse.json({ error: msg }, { status });
   }
 }
