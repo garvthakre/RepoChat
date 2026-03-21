@@ -1,0 +1,45 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  font-family: Inter, 'Segoe UI', Roboto, sans-serif;
+  background: #020209;
+  color: #e5e7eb;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+.animate-bounce-custom {
+  animation: bounce 0.9s infinite;
+}
+
+.delay-75 { animation-delay: 0.075s; }
+.delay-150 { animation-delay: 0.15s; }
+
+@keyframes bounce {
+  0%, 80%, 100% { transform: translateY(0); }
+  40% { transform: translateY(-4px); }
+}
+
+.scrollbar-thin::-webkit-scrollbar {
+  width: 8px;
+}
+
+.scrollbar-thin::-webkit-scrollbar-thumb {
+  background: #5b21b6;
+  border-radius: 999px;
+}
+
+.code-block pre {
+  background: #0f172a;
+  border: 1px solid #334155;
+}
