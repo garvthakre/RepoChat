@@ -146,7 +146,7 @@ export default function HomePage() {
 
         {/* Footer */}
         <p className="mt-8 text-center text-xs text-slate-600">
-          Powered by Claude AI · Only public repositories are supported
+          Made with ❤️ by <a href="https://github.com/garvthakre" className="text-violet-500 hover:underline" target="_blank" rel="noopener noreferrer">Garv Thakre</a>. Open source on <a href="https://github.com/garvthakre/repochat" className="text-violet-500 hover:underline" target="_blank" rel="noopener noreferrer">GitHub</a>.
         </p>
       </div>
     </main>
