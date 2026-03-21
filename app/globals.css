@@ -9,7 +9,7 @@
 html, body {
   margin: 0;
   padding: 0;
-  font-family: Inter, 'Segoe UI', Roboto, sans-serif;
+  font-family: 'Inter', 'Segoe UI', system-ui, sans-serif;
   background: #020209;
   color: #e5e7eb;
 }
@@ -18,28 +18,120 @@ html, body {
   box-sizing: border-box;
 }
 
-.animate-bounce-custom {
-  animation: bounce 0.9s infinite;
-}
-
-.delay-75 { animation-delay: 0.075s; }
-.delay-150 { animation-delay: 0.15s; }
-
-@keyframes bounce {
-  0%, 80%, 100% { transform: translateY(0); }
-  40% { transform: translateY(-4px); }
-}
-
+/* Scrollbar */
 .scrollbar-thin::-webkit-scrollbar {
-  width: 8px;
+  width: 6px;
 }
-
+.scrollbar-thin::-webkit-scrollbar-track {
+  background: transparent;
+}
 .scrollbar-thin::-webkit-scrollbar-thumb {
-  background: #5b21b6;
+  background: #3b1d6e;
   border-radius: 999px;
 }
+.scrollbar-thin::-webkit-scrollbar-thumb:hover {
+  background: #5b21b6;
+}
 
-.code-block pre {
-  background: #0f172a;
+/* Markdown prose styles for AI messages */
+.prose-custom {
+  line-height: 1.65;
+}
+
+.prose-custom .code-wrapper {
+  margin: 0.75rem 0;
+  border-radius: 10px;
+  overflow: hidden;
   border: 1px solid #334155;
+}
+
+.prose-custom .code-lang {
+  background: #0f172a;
+  border-bottom: 1px solid #1e293b;
+  padding: 4px 12px;
+  font-size: 10px;
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  color: #94a3b8;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.prose-custom pre {
+  background: #0a0f1e;
+  padding: 14px 16px;
+  overflow-x: auto;
+  margin: 0;
+}
+
+.prose-custom pre code {
+  font-family: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
+  font-size: 12px;
+  line-height: 1.7;
+  color: #e2e8f0;
+  background: none;
+  padding: 0;
+  border: none;
+}
+
+.prose-custom .inline-code {
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  font-size: 11px;
+  background: #1e293b;
+  border: 1px solid #334155;
+  color: #a5b4fc;
+  padding: 1px 5px;
+  border-radius: 4px;
+}
+
+.prose-custom strong {
+  color: #f1f5f9;
+  font-weight: 600;
+}
+
+.prose-custom em {
+  color: #cbd5e1;
+  font-style: italic;
+}
+
+.prose-custom .md-h1 {
+  font-size: 1.1rem;
+  font-weight: 700;
+  color: #f1f5f9;
+  margin: 0.75rem 0 0.25rem;
+}
+
+.prose-custom .md-h2 {
+  font-size: 1rem;
+  font-weight: 600;
+  color: #e2e8f0;
+  margin: 0.6rem 0 0.2rem;
+}
+
+.prose-custom .md-h3 {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: #cbd5e1;
+  margin: 0.5rem 0 0.2rem;
+}
+
+.prose-custom .md-ul {
+  list-style: none;
+  padding: 0;
+  margin: 0.5rem 0;
+}
+
+.prose-custom .md-li {
+  padding-left: 1.25rem;
+  position: relative;
+  margin: 0.2rem 0;
+  color: #cbd5e1;
+}
+
+.prose-custom .md-li::before {
+  content: '▸';
+  position: absolute;
+  left: 0;
+  color: #7c3aed;
+  font-size: 10px;
+  top: 2px;
 }

@@ -1,9 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
 
 const GITHUB_BASE = 'https://api.github.com';
+const GROQ_API_URL = 'https://api.groq.com/openai/v1/chat/completions';
 
 async function fetchJson(url: string, token?: string) {
-  const headers: Record<string, string> = { 'Accept': 'application/vnd.github.v3+json' };
+  const headers: Record<string, string> = {
+    'Accept': 'application/vnd.github.v3+json',
+    'User-Agent': 'RepoChat/1.0',
+  };
   if (token) headers['Authorization'] = `token ${token}`;
   const response = await fetch(url, { headers });
   if (!response.ok) {
@@ -13,44 +17,53 @@ async function fetchJson(url: string, token?: string) {
   return response.json();
 }
 
-function buildContext({ owner, repo, metadata, readme, fileList }: { owner: string; repo: string; metadata: any; readme: string; fileList: string[] }) {
-  const context: string[] = [];
-  context.push(`Repo: ${owner}/${repo}`);
-  context.push(`Description: ${metadata.description ?? 'No description'}`);
-  context.push(`Stars: ${metadata.stars ?? 0}, Language: ${metadata.language ?? 'unknown'}`);
-  if (Array.isArray(metadata.topics) && metadata.topics.length > 0) {
-    context.push(`Topics: ${metadata.topics.join(', ')}`);
+function buildSystemPrompt({
+  owner,
+  repo,
+  metadata,
+  readme,
+  fileList,
+}: {
+  owner: string;
+  repo: string;
+  metadata: Record<string, unknown>;
+  readme: string;
+  fileList: string[];
+}): string {
+  const lines: string[] = [
+    `You are RepoChat, an expert AI assistant specialized in understanding and explaining code repositories.`,
+    `You have been given full context about the GitHub repository "${owner}/${repo}".`,
+    `Answer questions accurately using ONLY the provided repository context. If something isn't covered in the context, say so honestly.`,
+    `When showing code, use proper markdown fenced code blocks with the language identifier.`,
+    ``,
+    `=== REPOSITORY CONTEXT ===`,
+    `Repository: ${owner}/${repo}`,
+    `Description: ${metadata.description ?? 'No description'}`,
+    `Stars: ${metadata.stars ?? 0} | Language: ${metadata.language ?? 'unknown'} | Forks: ${metadata.forks ?? 0}`,
+  ];
+
+  const topics = metadata.topics as string[] | undefined;
+  if (Array.isArray(topics) && topics.length > 0) {
+    lines.push(`Topics: ${topics.join(', ')}`);
   }
-  context.push(`URL: ${metadata.html_url}`);
-  context.push(`File count: ${fileList.length}`);
+
+  lines.push(`GitHub URL: ${metadata.html_url}`);
+  lines.push(`Total files indexed: ${fileList.length}`);
+  lines.push('');
+
   if (readme.trim()) {
     const trimmed = readme.slice(0, 4000);
-    context.push(`README (first 4000 chars):\n${trimmed}`);
+    lines.push(`=== README ===`);
+    lines.push(trimmed);
+    if (readme.length > 4000) lines.push('\n[README truncated for context length]');
+    lines.push('');
   }
-  context.push(`File structure (truncated to 100):\n${fileList.slice(0, 100).join('\n')}`);
 
-  return context.join('\n\n');
-}
+  lines.push(`=== FILE STRUCTURE ===`);
+  lines.push(fileList.slice(0, 100).join('\n'));
+  if (fileList.length > 100) lines.push('\n[File list truncated to 100 entries]');
 
-function parseStreamEvent(line: string): string {
-  if (!line.startsWith('data:')) return '';
-  const payload = line.replace(/^data:\s*/, '');
-  if (payload === '[DONE]') return '[DONE]';
-  try {
-    const obj = JSON.parse(payload);
-    if (obj?.delta?.content) {
-      return String(obj.delta.content);
-    }
-    if (obj?.completion?.[0]?.content?.[0]?.text) {
-      return String(obj.completion[0].content[0].text);
-    }
-    if (obj?.completion?.content) {
-      return String(obj.completion.content);
-    }
-  } catch (_){
-    return '';
-  }
-  return '';
+  return lines.join('\n');
 }
 
 export async function POST(request: NextRequest) {
@@ -67,103 +80,125 @@ export async function POST(request: NextRequest) {
   }
 
   const token = process.env.GITHUB_TOKEN;
-  const anthropicKey = process.env.ANTHROPIC_API_KEY;
-  if (!anthropicKey) {
-    return NextResponse.json({ error: 'Missing ANTHROPIC_API_KEY environment variable' }, { status: 500 });
+  const groqKey = process.env.GROQ_API_KEY;
+
+  if (!groqKey) {
+    return NextResponse.json({ error: 'Missing GROQ_API_KEY environment variable' }, { status: 500 });
   }
 
   try {
-    const repoResp = await fetchJson(`${GITHUB_BASE}/repos/${owner}/${repo}`, token);
-    const topicsResp = await fetchJson(`${GITHUB_BASE}/repos/${owner}/${repo}/topics`, token);
-    const treeResp = await fetchJson(`${GITHUB_BASE}/repos/${owner}/${repo}/git/trees/HEAD?recursive=1`, token);
+    // Fetch repo context in parallel
+    const [repoResp, topicsResp, treeResp] = await Promise.all([
+      fetchJson(`${GITHUB_BASE}/repos/${owner}/${repo}`, token),
+      fetchJson(`${GITHUB_BASE}/repos/${owner}/${repo}/topics`, token),
+      fetchJson(`${GITHUB_BASE}/repos/${owner}/${repo}/git/trees/HEAD?recursive=1`, token),
+    ]);
 
-    const fileEntries = Array.isArray(treeResp.tree)
+    const fileList: string[] = Array.isArray(treeResp.tree)
       ? treeResp.tree
-          .filter((item: any) => item.type === 'blob')
-          .map((item: any) => String(item.path))
+          .filter((item: { type: string }) => item.type === 'blob')
+          .map((item: { path: string }) => String(item.path))
           .filter((path: string) => !/node_modules|\.lock$|\.bak$/i.test(path))
+          .slice(0, 100)
       : [];
-    const fileList = fileEntries.slice(0, 100);
 
     const readmeRes = await fetch(`${GITHUB_BASE}/repos/${owner}/${repo}/readme`, {
       headers: {
         Accept: 'application/vnd.github.v3.raw',
+        'User-Agent': 'RepoChat/1.0',
         ...(token ? { Authorization: `token ${token}` } : {}),
       },
     });
-    const readme = readmeRes.ok ? (await readmeRes.text()) : '';
+    const readme = readmeRes.ok ? await readmeRes.text() : '';
 
-    const systemPrompt = `You are an AI assistant called RepoChat. Use only information directly from the repository context and do not fabricate details.\n\n${buildContext({ owner, repo, metadata: {
-      name: repoResp.full_name,
-      description: repoResp.description,
-      stars: repoResp.stargazers_count,
-      language: repoResp.language,
-      topics: topicsResp?.names ?? [],
-      html_url: repoResp.html_url,
-    }, readme, fileList })}`;
+    const systemPrompt = buildSystemPrompt({
+      owner,
+      repo,
+      metadata: {
+        description: repoResp.description,
+        stars: repoResp.stargazers_count,
+        language: repoResp.language,
+        topics: topicsResp?.names ?? [],
+        html_url: repoResp.html_url,
+        forks: repoResp.forks_count,
+      },
+      readme,
+      fileList,
+    });
 
-    const userMessages = messages
-      .map((m: { role?: string; content?: string }) => {
-        const role = m.role === 'assistant' ? 'ASSISTANT' : 'USER';
-        return `${role}: ${String(m.content ?? '').trim()}`;
-      })
-      .join('\n');
+    // Build messages for OpenAI-compatible Groq API
+    const apiMessages = [
+      { role: 'system', content: systemPrompt },
+      ...messages
+        .filter((m: { role?: string; content?: string }) => m.role === 'user' || m.role === 'assistant')
+        .map((m: { role: string; content: string }) => ({
+          role: m.role,
+          content: String(m.content ?? '').trim(),
+        }))
+        .filter((m: { content: string }) => m.content.length > 0),
+    ];
 
-    const prompt = `${systemPrompt}\n\n${userMessages}\nASSISTANT:`;
-
-    const response = await fetch('https://api.anthropic.com/v1/stream', {
+    // Call Groq with streaming (OpenAI-compatible)
+    const groqResponse = await fetch(GROQ_API_URL, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${anthropicKey}`,
+        'Authorization': `Bearer ${groqKey}`,
       },
       body: JSON.stringify({
-        model: 'claude-sonnet-4-20250514',
-        prompt,
-        max_tokens_to_sample: 1000,
+        model: 'llama-3.3-70b-versatile',
+        messages: apiMessages,
+        max_tokens: 2048,
         stream: true,
       }),
     });
 
-    if (!response.ok || !response.body) {
-      const errorText = await response.text();
-      return NextResponse.json({ error: `Anthropic error: ${response.status} ${errorText}` }, { status: 500 });
+    if (!groqResponse.ok || !groqResponse.body) {
+      const errorText = await groqResponse.text();
+      return NextResponse.json(
+        { error: `Groq API error ${groqResponse.status}: ${errorText}` },
+        { status: 500 }
+      );
     }
 
-    const reader = response.body.getReader();
+    // Forward the SSE stream, extracting text deltas
     const encoder = new TextEncoder();
     const decoder = new TextDecoder();
+    const reader = groqResponse.body.getReader();
 
     const stream = new ReadableStream({
       async start(controller) {
         let buffer = '';
+        try {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
 
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop() ?? '';
 
-          const lines = buffer.split('\n');
-          buffer = lines.pop() ?? '';
-
-          for (const line of lines) {
-            const chunk = parseStreamEvent(line.trim());
-            if (!chunk) continue;
-            if (chunk === '[DONE]') {
-              controller.close();
-              return;
+            for (const line of lines) {
+              const trimmed = line.trim();
+              if (!trimmed.startsWith('data:')) continue;
+              const data = trimmed.slice(5).trim();
+              if (data === '[DONE]') {
+                controller.close();
+                return;
+              }
+              try {
+                const parsed = JSON.parse(data);
+                const text = parsed?.choices?.[0]?.delta?.content;
+                if (text) controller.enqueue(encoder.encode(text));
+              } catch {
+                // skip malformed chunks
+              }
             }
-            controller.enqueue(encoder.encode(chunk));
           }
+        } catch (err: unknown) {
+          const message = err instanceof Error ? err.message : 'Stream error';
+          controller.enqueue(encoder.encode(`\n\n[Error: ${message}]`));
         }
-
-        if (buffer.trim()) {
-          const chunk = parseStreamEvent(buffer.trim());
-          if (chunk && chunk !== '[DONE]') {
-            controller.enqueue(encoder.encode(chunk));
-          }
-        }
-
         controller.close();
       },
     });
@@ -172,9 +207,11 @@ export async function POST(request: NextRequest) {
       headers: {
         'Content-Type': 'text/plain; charset=utf-8',
         'Cache-Control': 'no-cache, no-store, max-age=0',
+        'X-Accel-Buffering': 'no',
       },
     });
-  } catch (error: any) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : 'Unknown error';
+    return NextResponse.json({ error: message }, { status: 500 });
   }
 }
