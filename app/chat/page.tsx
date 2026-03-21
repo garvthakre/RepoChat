@@ -27,35 +27,25 @@ type ChatMessage = { role: 'user' | 'assistant'; content: string };
 
 // Simple markdown renderer for code blocks and basic formatting
 function renderMarkdown(text: string): string {
-  // Escape HTML first
   const escaped = text
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;');
 
   return escaped
-    // Fenced code blocks
     .replace(/```(\w*)\n?([\s\S]*?)```/g, (_, lang, code) => {
       const langLabel = lang || 'code';
-      return `<div class="code-wrapper"><div class="code-lang">${langLabel}</div><pre><code>${code.trimEnd()}</code></pre></div>`;
+      return `<div class="code-wrapper"><div class="code-header"><span class="code-lang">${langLabel}</span><button class="copy-btn" onclick="navigator.clipboard.writeText(this.closest('.code-wrapper').querySelector('code').innerText).then(()=>{this.textContent='Copied!';setTimeout(()=>{this.textContent='Copy'},1500)})">Copy</button></div><pre><code>${code.trimEnd()}</code></pre></div>`;
     })
-    // Inline code
     .replace(/`([^`]+)`/g, '<code class="inline-code">$1</code>')
-    // Bold
     .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-    // Italic
     .replace(/\*([^*]+)\*/g, '<em>$1</em>')
-    // Headers
     .replace(/^### (.+)$/gm, '<h3 class="md-h3">$1</h3>')
     .replace(/^## (.+)$/gm, '<h2 class="md-h2">$1</h2>')
     .replace(/^# (.+)$/gm, '<h1 class="md-h1">$1</h1>')
-    // Unordered list items
     .replace(/^[-*] (.+)$/gm, '<li class="md-li">$1</li>')
-    // Wrap consecutive <li> in <ul>
     .replace(/(<li class="md-li">.*<\/li>\n?)+/g, (match) => `<ul class="md-ul">${match}</ul>`)
-    // Numbered list
     .replace(/^\d+\. (.+)$/gm, '<li class="md-li">$1</li>')
-    // Line breaks (double newline = paragraph break)
     .replace(/\n\n/g, '<br/><br/>')
     .replace(/\n/g, '<br/>');
 }
@@ -154,6 +144,32 @@ function LoadingScreen({ owner, repo, status }: { owner: string; repo: string; s
   );
 }
 
+// Suggestions grid shown in the empty state — used on both desktop (sidebar) and mobile (inline)
+function SuggestionsGrid({
+  suggestions,
+  onSelect,
+  disabled,
+}: {
+  suggestions: string[];
+  onSelect: (q: string) => void;
+  disabled: boolean;
+}) {
+  return (
+    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 w-full max-w-lg">
+      {suggestions.map((q) => (
+        <button
+          key={q}
+          onClick={() => onSelect(q)}
+          disabled={disabled}
+          className="text-left text-xs text-slate-300 hover:text-white bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-lg px-3 py-2.5 transition-colors disabled:opacity-50 leading-relaxed"
+        >
+          {q}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 function RepoChatInner() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -208,7 +224,6 @@ function RepoChatInner() {
     }
   }, [messages, assistantDraft]);
 
-  // Auto-resize textarea
   useEffect(() => {
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto';
@@ -319,6 +334,7 @@ function RepoChatInner() {
   }
 
   const { metadata, fileCount } = repoData;
+  const repoShortName = metadata.name.split('/').pop() ?? metadata.name;
 
   return (
     <main className="h-screen bg-slate-950 flex flex-col overflow-hidden">
@@ -397,7 +413,7 @@ function RepoChatInner() {
               </a>
             </div>
 
-            {/* Suggested questions */}
+            {/* Suggested questions — sidebar (desktop) */}
             {messages.length === 0 && (
               <div>
                 <p className="text-xs font-medium text-slate-500 uppercase tracking-wider mb-2">Suggested Questions</p>
@@ -423,29 +439,23 @@ function RepoChatInner() {
           {/* Messages */}
           <div ref={scrollRef} className="flex-1 overflow-y-auto px-4 py-4 space-y-1 scrollbar-thin">
             {messages.length === 0 && !assistantDraft && (
-              <div className="flex items-center justify-center h-full">
-                <div className="text-center max-w-sm">
+              <div className="flex flex-col items-center justify-center h-full gap-5 px-2">
+                <div className="text-center">
                   <div className="w-14 h-14 rounded-2xl bg-violet-600/20 border border-violet-500/30 flex items-center justify-center mx-auto mb-4">
                     <span className="text-2xl">💬</span>
                   </div>
-                  <h3 className="font-semibold text-white mb-2">Chat with {metadata.name.split('/').pop()}</h3>
+                  <h3 className="font-semibold text-white mb-2">Chat with {repoShortName}</h3>
                   <p className="text-sm text-slate-400 leading-relaxed">
                     Ask anything about this codebase — architecture, how to run it, specific files, and more.
                   </p>
-                  {/* Mobile suggestions */}
-                  <div className="mt-4 space-y-2 lg:hidden">
-                    {detectedSuggestions.slice(0, 3).map((q) => (
-                      <button
-                        key={q}
-                        onClick={() => void sendMessage(q)}
-                        disabled={streaming}
-                        className="w-full text-left text-xs text-slate-300 hover:text-white bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-lg px-3 py-2.5 transition-colors"
-                      >
-                        {q}
-                      </button>
-                    ))}
-                  </div>
                 </div>
+
+                {/* Full suggestions grid — visible on ALL screen sizes */}
+                <SuggestionsGrid
+                  suggestions={detectedSuggestions}
+                  onSelect={(q) => void sendMessage(q)}
+                  disabled={streaming}
+                />
               </div>
             )}
 
@@ -477,7 +487,7 @@ function RepoChatInner() {
                 value={messageInput}
                 onChange={(e) => setMessageInput(e.target.value)}
                 onKeyDown={handleKeyDown}
-                placeholder={`Ask about ${metadata.name.split('/').pop()}...`}
+                placeholder={`Ask about ${repoShortName}...`}
                 rows={1}
                 className="flex-1 resize-none rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-violet-500 transition-colors min-h-[46px] max-h-[120px]"
               />

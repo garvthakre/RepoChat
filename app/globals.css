@@ -135,3 +135,31 @@ html, body {
   font-size: 10px;
   top: 2px;
 }
+ 
+ 
+.prose-custom .code-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: #0f172a;
+  border-bottom: 1px solid #1e293b;
+  padding: 4px 12px;
+}
+
+.prose-custom .copy-btn {
+  font-size: 10px;
+  font-family: 'Inter', system-ui, sans-serif;
+  color: #64748b;
+  background: transparent;
+  border: 1px solid #1e293b;
+  border-radius: 4px;
+  padding: 2px 8px;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+  line-height: 1.5;
+}
+
+.prose-custom .copy-btn:hover {
+  color: #a5b4fc;
+  border-color: #4c1d95;
+}
