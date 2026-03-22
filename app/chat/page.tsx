@@ -582,7 +582,7 @@ function OnboardingModal({
         {generated && (
           <div className="flex-shrink-0 border-t border-slate-800 px-5 py-2.5">
             <p className="text-xs text-slate-600 text-center">
-              Paste this into Notion, Confluence, or a GitHub wiki — it's standard Markdown.
+              Paste this into Notion, Confluence, or a GitHub wiki — it&apos;s standard Markdown.
             </p>
           </div>
         )}

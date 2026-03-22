@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from 'next/server';
 
 const GITHUB_BASE = 'https://api.github.com';
 
+type GitHubTreeItem = { type: string; path: string };
+
 async function fetchJson(url: string, token?: string) {
   const headers: Record<string, string> = {
     'Accept': 'application/vnd.github.v3+json',
@@ -34,14 +36,14 @@ export async function GET(request: NextRequest) {
       fetchJson(`${GITHUB_BASE}/repos/${owner}/${repo}/topics`, token),
     ]);
 
-    const branch = metadata.default_branch || 'HEAD';
-    let treeResp: any;
+    const branch: string = metadata.default_branch || 'HEAD';
+    let treeResp: { tree?: GitHubTreeItem[] };
     try {
       treeResp = await fetchJson(
         `${GITHUB_BASE}/repos/${owner}/${repo}/git/trees/${encodeURIComponent(branch)}?recursive=1`,
         token
       );
-    } catch (err) {
+    } catch {
       treeResp = await fetchJson(
         `${GITHUB_BASE}/repos/${owner}/${repo}/git/trees/HEAD?recursive=1`,
         token
@@ -49,8 +51,8 @@ export async function GET(request: NextRequest) {
     }
 
     const rawTree: string[] = [];
-    const fileEntries = Array.isArray(treeResp.tree)
-      ? treeResp.tree.filter((item: any) => item.type === 'blob')
+    const fileEntries: GitHubTreeItem[] = Array.isArray(treeResp.tree)
+      ? treeResp.tree.filter((item: GitHubTreeItem) => item.type === 'blob')
       : [];
 
     for (const file of fileEntries) {
@@ -85,8 +87,8 @@ export async function GET(request: NextRequest) {
       files: rawTree,
       readme: readmeText,
     });
-  } catch (error: any) {
-    const msg: string = error.message ?? '';
+  } catch (error: unknown) {
+    const msg: string = error instanceof Error ? error.message : '';
 
     if (msg.startsWith('RATE_LIMIT:') || /rate.?limit/i.test(msg)) {
       return NextResponse.json(

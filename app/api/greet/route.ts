@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { buildGreetingPrompt } from '../chat/route';
+import { buildGreetingPrompt } from '../../../lib/shared';
 
 const GITHUB_BASE = 'https://api.github.com';
 const GROQ_API_URL = 'https://api.groq.com/openai/v1/chat/completions';
