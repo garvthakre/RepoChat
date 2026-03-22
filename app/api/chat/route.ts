@@ -17,11 +17,11 @@ const TEXT_EXTENSIONS = new Set([
 ]);
 
 // Max size per file in bytes — skip anything larger to keep the prompt lean
-const MAX_FILE_BYTES = 3_000;
+const MAX_FILE_BYTES = 12_000;
 // Max total characters of file content to inject into the prompt
-const MAX_TOTAL_CONTENT_CHARS = 8_000;
+const MAX_TOTAL_CONTENT_CHARS = 32_000;
 // Max number of files to fetch content for
-const MAX_FILES_TO_FETCH = 8;
+const MAX_FILES_TO_FETCH = 20;
 
 function isTextFile(path: string): boolean {
   const lower = path.toLowerCase();
@@ -63,7 +63,9 @@ async function fetchFileContent(
     };
     if (token) headers['Authorization'] = `token ${token}`;
 
-    const url = `${GITHUB_BASE}/repos/${owner}/${repo}/contents/${encodeURIComponent(path)}`;
+    // Encode each segment individually — encoding the whole path would escape the slashes
+    const encodedPath = path.split('/').map(encodeURIComponent).join('/');
+    const url = `${GITHUB_BASE}/repos/${owner}/${repo}/contents/${encodedPath}`;
     const res = await fetch(url, { headers });
     if (!res.ok) return null;
 
@@ -87,12 +89,19 @@ function prioritizeFiles(files: string[]): string[] {
     const lower = f.toLowerCase();
     const base = lower.split('/').pop() ?? '';
     const isHighPriority =
-      /^(package\.json|readme|dockerfile|docker-compose|\.env\.example|makefile|procfile)/.test(base) ||
-      /\.(config|env)\.(ts|js|mjs)$/.test(lower) ||
-      /^(src|app|lib|pages|routes|controllers|models|schema)\//i.test(f) ||
-      /\bindex\.(ts|tsx|js|jsx)$/.test(lower) ||
-      /\bmain\.(ts|tsx|js|jsx|py|go|rs|java)$/.test(lower) ||
-      /schema\.(prisma|graphql|gql|sql)$/.test(lower);
+      // Root-level config/docs (match by basename)
+      /^(package\.json|readme(\.\w+)?|dockerfile|docker-compose[\w.-]*|\.env\.(example|sample)|makefile|procfile)$/.test(base) ||
+      // Config files anywhere
+      /\.(config|env)\.(ts|js|mjs|cjs)$/.test(lower) ||
+      // Key source directories — test against lower so casing never mismatches
+      /^(src|app|lib|pages|routes|controllers|models|schema|server|api|core|utils|helpers)\//.test(lower) ||
+      // Entry points
+      /(^|\/)(index|main|app|server|cli)\.(ts|tsx|js|jsx|py|go|rs|java|rb)$/.test(lower) ||
+      // Schema files
+      /schema\.(prisma|graphql|gql|sql)$/.test(lower) ||
+      // Next.js App Router — route.ts and page.tsx anywhere
+      /\/route\.(ts|js)$/.test(lower) ||
+      /\/page\.(tsx|jsx|ts|js)$/.test(lower);
 
     if (isHighPriority) priority.push(f);
     else rest.push(f);
@@ -193,7 +202,7 @@ function buildSystemPrompt({
   lines.push('');
 
   if (readme.trim()) {
-    const trimmed = readme.slice(0, 4000);
+    const trimmed = readme.slice(0, 1500);
     lines.push(`=== README ===`);
     lines.push(trimmed);
     if (readme.length > 4000) lines.push('\n[README truncated for context length]');
